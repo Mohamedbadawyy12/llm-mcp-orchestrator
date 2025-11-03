@@ -1,0 +1,16 @@
+# config/settings.yaml
+
+# General application settings
+project_name: "MCP AI Orchestrator"
+log_level: "INFO"
+debug: true
+
+# API Keys
+# It's a BEST PRACTICE to load these from environment variables in production.
+# pydantic-settings will automatically look for an environment variable with the same name
+# (e.g., GOOGLE_API_KEY) and prioritize it over the value in this file.
+google_api_key: "YOUR_GEMINI_API_KEY_HERE"
+
+# Paths to other configuration files
+mcp_servers_config_path: "config/servers.json"
+agents_config_path: "config/agents.json"
