@@ -1,0 +1,24 @@
+# requirements.txt
+
+# Web Framework
+fastapi
+
+# ASGI Server
+uvicorn[standard]
+
+# For configuration loading
+pydantic
+pydantic-settings
+pyyaml
+
+# Logging
+loguru
+
+# For Server-Sent Events (SSE)
+sse-starlette
+
+# Async HTTP Client
+httpx
+
+# SSE client for httpx
+httpx-sse
