@@ -5,6 +5,8 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 import json
+# --- 1. تم إضافة logger ---
+from loguru import logger
 
 from app.servers.base_server import create_mcp_server, McpInfoResponse, ToolInfo
 from app.utils.security import run_in_sandbox
@@ -15,13 +17,13 @@ app = create_mcp_server(server_name="Terminal")
 # --- 2. Define Tool Information ---
 TERMINAL_TOOL_INFO = ToolInfo(
     name="execute_command",
-    description="Executes a sandboxed shell command and streams the output. Only a limited set of safe, read-only commands are allowed (e.g., ls, pwd, cat, echo).",
+    description="Executes a sandboxed shell command and streams the output. Only a limited set of safe, read-only commands are allowed (e.g., ls, dir, pwd, cat, echo).",
     input_schema={
         "type": "object",
         "properties": {
             "command": {
                 "type": "string",
-                "description": "The command to execute (e.g., 'ls'). Must be on the allow-list.",
+                "description": "The command to execute (e.g., 'ls', 'dir'). Must be on the allow-list.",
             },
             "args": {
                 "type": "array",
@@ -66,7 +68,13 @@ async def run_tool(request: RunToolRequest):
                 while not stream.at_eof():
                     line = await stream.readline()
                     if line:
-                        yield json.dumps({"type": stream_type, "content": line.decode('utf-8').strip()})
+                        try:
+                            content = line.decode('utf-8').strip()
+                        except UnicodeDecodeError:
+                            # إذا فشل utf-8، حاول بترميز ويندوز الافتراضي
+                            content = line.decode('cp1252', errors='ignore').strip()
+                        
+                        yield json.dumps({"type": stream_type, "content": content})
 
             # Create tasks for streaming stdout and stderr concurrently
             stdout_task = asyncio.create_task(stream_output(process.stdout, "stdout").__anext__())
@@ -88,6 +96,9 @@ async def run_tool(request: RunToolRequest):
                     except StopAsyncIteration:
                         # This stream is finished
                         pass
+                    except Exception as e:
+                        logger.error(f"Error during stream processing: {e}")
+                        yield json.dumps({"type": "error", "content": f"Stream processing error: {str(e)}"})
 
             exit_code = await process.wait()
             yield json.dumps({"type": "exit_code", "content": exit_code})

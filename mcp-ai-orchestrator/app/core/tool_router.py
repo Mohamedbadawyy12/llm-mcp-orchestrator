@@ -56,11 +56,15 @@ class ToolRouter:
             if not server_name or not server_url:
                 logger.error(f"Invalid server config entry: {server_config}")
                 continue
-
+            
             client = MCPHttpClient(server_url=server_url)
             self.clients[server_name] = client
 
-            info = await client.get_info()
+            # discovery_client سيتم استخدامه فقط لهذه الدالة (داخل اللوب الرئيسي)
+            discovery_client = MCPHttpClient(server_url=server_url)
+            info = await discovery_client.get_info()
+            # --- نهاية التعديل ---
+            
             if info and info.tools:
                 for tool_info in info.tools:
                     unique_name = f"{server_name}/{tool_info.name}"
@@ -90,10 +94,14 @@ class ToolRouter:
         registered_tool = self.tools[unique_tool_name]
         server_name = registered_tool.server_name
         tool_name = registered_tool.name
+        
+        # --- تم التعديل هنا ---
+        # احصل على العميل (الذي يحتوي فقط على الـ URL)
         client = self.clients[server_name]
-
+        # client.run_tool سيقوم بإنشاء عميل httpx جديد بنفسه
         async for event in client.run_tool(tool_name=tool_name, params=params):
             yield event
+        # --- نهاية التعديل ---
 
 # Create a single, global instance of the ToolRouter
 tool_router = ToolRouter()

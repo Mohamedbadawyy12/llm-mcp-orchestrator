@@ -8,6 +8,7 @@ from typing import List
 # or better yet, commands should run in an isolated container.
 ALLOWED_COMMANDS = {
     "ls",
+    "dir", 
     "pwd",
     "echo",
     "cat",
@@ -35,7 +36,7 @@ async def run_in_sandbox(command: str, args: List[str]) -> asyncio.subprocess.Pr
     Runs a command securely and asynchronously in a subprocess.
 
     This function first validates the command against an allow-list and then
-    uses asyncio.create_subprocess_exec to run it without blocking the event loop.
+    uses asyncio.create_subprocess_shell to run it inside the OS shell.
 
     Raises:
         PermissionError: If the command is not in the allowed list.
@@ -43,7 +44,11 @@ async def run_in_sandbox(command: str, args: List[str]) -> asyncio.subprocess.Pr
     if not is_command_safe(command):
         raise PermissionError(f"Command '{command}' is not allowed for security reasons.")
 
-    process = await asyncio.create_subprocess_exec(
-        command, *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    full_command_str = f"{command} {' '.join(args)}"
+
+    process = await asyncio.create_subprocess_shell(
+        full_command_str, 
+        stdout=asyncio.subprocess.PIPE, 
+        stderr=asyncio.subprocess.PIPE
     )
     return process

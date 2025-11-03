@@ -1,10 +1,11 @@
 # app/core/orchestrator.py
 
 import json
+import asyncio
 from typing import Annotated, Sequence, TypedDict
 
 from langchain_core.tools import StructuredTool
-from langchain_core.messages import BaseMessage, ToolMessage
+from langchain_core.messages import BaseMessage, ToolMessage, SystemMessage, HumanMessage
 from pydantic import create_model, Field
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
@@ -35,7 +36,7 @@ class McpOrchestrator:
 
         logger.info("Initializing Gemini LLM...")
         return ChatGoogleGenerativeAI(
-            model="gemini-2.5-pro",
+            model="gemini-2.5-flash", 
             google_api_key=settings.google_api_key,
             streaming=True,
         )
@@ -50,6 +51,7 @@ class McpOrchestrator:
                 return "tools"
             return END
 
+        # --- 2. تم تعديل هذه الدالة بالكامل بالمنطق الصحيح ---
         def call_model(state: AgentState):
             """Agent node: calls Gemini to decide next action."""
             messages = state.get("messages", [])
@@ -59,27 +61,43 @@ class McpOrchestrator:
 
             logger.debug(f"Calling Gemini with {len(messages)} message(s).")
 
-            # Always include system context (Gemini expects it)
-            system_message = {
-                "role": "system",
-                "content": (
-                    "You are an intelligent MCP Orchestrator agent. "
-                    "You analyze user messages, decide if any registered tool should be called, "
-                    "and return helpful, structured responses. "
-                    "If a tool is needed, include its call in the output."
-                ),
-            }
+            system_message = SystemMessage(
+                content=(
+                    "You are a helpful assistant running on a **Windows operating system**. You have access to a set of tools. "
+                    "The user's request is in `HumanMessage`. "
+                    "If the request requires a tool (like 'list files'), you must call the tool. **Remember to use Windows commands (e.g., 'dir' instead of 'ls').** "
+                    "After you call a tool, you will receive a result. "
+                    "Your job is to analyze this result. "
+                    "You **must** then respond to the user with a helpful, final text message, either summarizing the tool's result or clearly explaining the error."
+                )
+            )
 
-            # Convert messages to Gemini-compatible dicts
-            gemini_messages = [system_message]
-            for msg in messages:
-                role = "user" if msg.type == "human" else "assistant"
-                gemini_messages.append({"role": role, "content": msg.content})
+            
+            last_message = messages[-1]
+            messages_for_llm = [system_message] 
+            
+            if last_message.type == "tool":
+                logger.info("Last message was tool result. Cleaning messages for simple LLM.")
+                
+                for msg in messages:
+                    if msg.type == "tool":
 
-            response = self.llm.invoke(gemini_messages)
+                        messages_for_llm.append(HumanMessage(content=f"Tool result: {msg.content}"))
+                    else:
+                        messages_for_llm.append(msg)
+                
+                response = self.llm.invoke(messages_for_llm)
+                
+            else:
+                logger.info("Last message was human. Calling LLM with tools for routing.")
+                messages_for_llm.extend(messages)
+                response = llm_with_tools.invoke(messages_for_llm)
 
-            if not getattr(response, "content", None):
-                logger.error("Gemini returned empty content — invalid message formatting.")
+            # --- نهاية الإصلاح ---
+
+            response_content = getattr(response, "content", "")
+            if not (response_content and response_content.strip()) and not response.tool_calls:
+                logger.error("Gemini returned empty or blank content and no tool calls.")
                 raise ValueError("Gemini returned empty content.")
 
             logger.info("✅ Gemini responded successfully.")
@@ -136,21 +154,47 @@ async def create_langchain_tools_from_router():
             **fields
         )
 
-        def create_async_func(tool_name_for_closure: str):
-            async def tool_func(**kwargs):
+        def create_sync_func(tool_name_for_closure: str):
+            def tool_func(**kwargs):
                 logger.info(f"Agent is calling tool: {tool_name_for_closure} with args: {kwargs}")
-                output_chunks = []
-                async for event in tool_router.run_tool(unique_tool_name=tool_name_for_closure, params=kwargs):
-                    output_chunks.append(event)
-                return json.dumps(output_chunks, indent=2)
+                
+                async def _run_async():
+                    output_chunks = []
+                    async for event in tool_router.run_tool(unique_tool_name=tool_name_for_closure, params=kwargs):
+                        output_chunks.append(event)
+                    
+                    stdout_lines = []
+                    stderr_lines = []
+                    
+                    for event in output_chunks:
+                        if not isinstance(event, dict):
+                            logger.warning(f"Received non-dict event: {event}")
+                            continue
+                            
+                        event_type = event.get("type")
+                        content = event.get("content")
+                        
+                        if event_type == "stdout":
+                            stdout_lines.append(str(content))
+                        elif event_type in ("stderr", "error"):
+                            stderr_lines.append(str(content))
+                    
+                    if stderr_lines:
+                        return "Tool Error:\n" + "\n".join(stderr_lines)
+                    elif stdout_lines:
+                        return "Tool Output:\n" + "\n".join(stdout_lines)
+                    else:
+                        return "Tool ran successfully but produced no output."
+                
+                return asyncio.run(_run_async())
+            
             return tool_func
 
-        # ✅ FIX: use func= instead of coro=
         langchain_tools.append(
             StructuredTool.from_function(
                 name=gemini_compatible_name,
                 description=registered_tool.description,
-                func=create_async_func(unique_name),
+                func=create_sync_func(unique_name), 
                 args_schema=args_model
             )
         )
