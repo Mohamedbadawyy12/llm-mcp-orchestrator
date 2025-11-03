@@ -22,3 +22,8 @@ httpx
 
 # SSE client for httpx
 httpx-sse
+
+# LangChain and LangGraph
+langchain
+langgraph
+langchain-google-genai

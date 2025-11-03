@@ -6,7 +6,8 @@ from loguru import logger
 
 from app.core.config import settings # Import the settings instance
 from app.core.logger import setup_logging
-from app.api import routes_tools
+from app.api import routes_tools, routes_chat 
+from app.core import orchestrator as orchestrator_module
 from app.core.tool_router import tool_router
 
 # Create a FastAPI app instance
@@ -21,6 +22,7 @@ app = FastAPI(
 
 # Include API routers
 app.include_router(routes_tools.router)
+app.include_router(routes_chat.router)
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -57,6 +59,16 @@ async def startup_event():
     
     # Discover and register all tools from MCP servers
     await tool_router.discover_tools()
+
+    # Now that tools are discovered, create the LangChain tools and the orchestrator
+    try:
+        langchain_tools = await orchestrator_module.create_langchain_tools_from_router()
+        if langchain_tools:
+            orchestrator_instance = orchestrator_module.McpOrchestrator(tools=langchain_tools)
+            orchestrator_module.agent_graph = orchestrator_instance.graph
+            logger.success("Orchestrator and agent graph initialized successfully.")
+    except Exception as e:
+        logger.error(f"Failed to initialize orchestrator: {e}")
 
 
 @app.on_event("shutdown")
