@@ -1,7 +1,7 @@
 # app/api/routes_chat.py
 
 import json
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
@@ -12,34 +12,30 @@ from app.core import orchestrator
 router = APIRouter()
 
 class ChatRequest(BaseModel):
-    """Request model for the chat endpoint."""
+    """Request model for chat streaming."""
     message: str
-    thread_id: str # Used to maintain conversation state (not implemented yet, but good practice)
+    thread_id: str  # used later for conversation tracking
+
 
 @router.post("/chat/stream")
 async def chat_stream(chat_request: ChatRequest):
-    """
-    Handles a chat request and streams the agent's thoughts and actions.
-    """
+    """Streams agent responses using Server-Sent Events (SSE)."""
     if not orchestrator.agent_graph:
-        raise HTTPException(status_code=500, detail="Orchestrator is not available. Check server logs for errors.")
+        raise HTTPException(status_code=500, detail="Orchestrator not initialized. Check startup logs.")
 
-    logger.info(f"Received chat request for thread '{chat_request.thread_id}'")
+    logger.info(f"Received chat request: '{chat_request.message}' [thread={chat_request.thread_id}]")
 
     async def event_stream():
-        """The generator function that yields SSE events from the agent graph."""
         try:
-            # The input to the graph is the current state
             graph_input = {"messages": [HumanMessage(content=chat_request.message)]}
-            
-            # astream() streams all intermediate steps from the graph
+
             async for step in orchestrator.agent_graph.astream_events(graph_input, version="v1"):
                 event_data = {
                     "event": step["event"],
                     "name": step["name"],
                     "data": {}
                 }
-                # We are interested in the data when the agent or tools finish running
+
                 if step["event"] == "on_chain_end":
                     data = step["data"].get("output")
                     if isinstance(data, dict) and "messages" in data:
@@ -53,6 +49,7 @@ async def chat_stream(chat_request: ChatRequest):
                                 event_data["data"]["type"] = "tool_result"
                                 event_data["data"]["content"] = msg.content
                                 event_data["data"]["tool_call_id"] = msg.tool_call_id
+
                 yield json.dumps(event_data)
 
         except Exception as e:
