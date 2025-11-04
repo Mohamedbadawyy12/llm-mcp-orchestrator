@@ -47,54 +47,55 @@ async def chat_stream(chat_request: ChatRequest):
             # Run the graph stream with the full message history
             async for step in orchestrator.agent_graph.astream_events(graph_input, version="v1"):
                 
-                # --- MODIFIED: Filter events for a user-friendly output ---
-                # We only care about the final output of a chain step (on_chain_end)
                 if step["event"] != "on_chain_end":
-                    continue # Skip all other events (on_chain_start, on_tool_start, etc.)
-                # --- End of modification ---
-
-                # This object will hold the clean data we want to send
-                clean_data_to_send = {}
+                    continue 
 
                 data = step["data"].get("output")
-                if isinstance(data, dict) and "messages" in data:
-                    messages = data["messages"]
-                    for msg in messages:
-                        if isinstance(msg, AIMessage):
-                            # Handle complex msg.content (which can be list or str)
-                            final_content = ""
-                            if isinstance(msg.content, str):
-                                final_content = msg.content
-                            elif isinstance(msg.content, list):
-                                for part in msg.content:
-                                    if isinstance(part, dict) and "text" in part:
-                                        final_content += part["text"]
-                            
-                            clean_data_to_send["type"] = "ai_message"
-                            clean_data_to_send["content"] = final_content
-                            clean_data_to_send["tool_calls"] = msg.tool_calls
-                            
-                            new_messages_from_graph.append(msg) # Save original message to memory
+                if not (isinstance(data, dict) and "messages" in data):
+                    continue
+
+                messages = data["messages"]
+                for msg in messages:
+                    
+                    if isinstance(msg, AIMessage):
                         
-                        elif isinstance(msg, ToolMessage):
-                            clean_data_to_send["type"] = "tool_result"
-                            clean_data_to_send["content"] = msg.content
-                            clean_data_to_send["tool_call_id"] = msg.tool_call_id
+                        new_messages_from_graph.append(msg) 
+                        
+                        if msg.tool_calls:
+                            logger.debug("Skipping (AIMessage with tool calls)...")
+                            continue 
+                        
+                        final_content = ""
+                        if isinstance(msg.content, str):
+                            final_content = msg.content
+                        elif isinstance(msg.content, list):
+                            for part in msg.content:
+                                if isinstance(part, dict) and "text" in part:
+                                    final_content += part["text"]
+                        
+                        # ---------------------------------------------------------
+                        # 💡 التعديل الوحيد هنا
+                        # ---------------------------------------------------------
+                        # بدل ما نبعت الـ JSON object كله
+                        # yield json.dumps(clean_data_to_send)
+                        
+                        # هنبعت المحتوى (final_content) بس
+                        # `EventSourceResponse` هيتولى تغليفه كـ data: "..."
+                        if final_content:
+                            yield json.dumps(final_content)
+                        # ---------------------------------------------------------
 
-                            new_messages_from_graph.append(msg) # Save original message to memory
-
-                # --- MODIFIED: Only yield if we have clean data ---
-                # If we processed a message and have content, send *only* the clean data.
-                if clean_data_to_send and (clean_data_to_send.get("content") or clean_data_to_send.get("tool_calls")):
-                    yield json.dumps(clean_data_to_send)
-                # --- End of modification ---
+                    elif isinstance(msg, ToolMessage):
+                        new_messages_from_graph.append(msg)
+                        logger.debug("Skipping (ToolMessage)...")
+                        continue 
 
         except Exception as e:
             logger.error(f"Error during agent execution: {e}")
             yield json.dumps({"error": str(e)})
         
         finally:
-            # Save the updated memory
+            # حفظ الـ History
             if new_messages_from_graph:
                 conversation_memory[chat_request.thread_id] = current_messages + new_messages_from_graph
                 logger.success(f"Updated memory for thread {chat_request.thread_id}. Total messages: {len(conversation_memory[chat_request.thread_id])}")
