@@ -1,8 +1,26 @@
 [
   {
     "name": "terminal_server",
-    "url": "http://127.0.0.1:8001",
+    "url": "http://terminal_server:8001",
     "description": "Provides tools for executing sandboxed shell commands.",
+    "enabled": true
+  },
+  {
+    "name": "file_system_server",
+    "url": "http://file_system_server:8002",
+    "description": "Provides tools for reading and writing files in the workspace.",
+    "enabled": true
+  },
+  {
+    "name": "git_server",
+    "url": "http://git_server:8003",
+    "description": "Provides tools for running Git operations.",
+    "enabled": true
+  },
+  {
+    "name": "docker_server",
+    "url": "http://docker_server:8004",
+    "description": "Provides tools for managing Docker containers.",
     "enabled": true
   }
 ]

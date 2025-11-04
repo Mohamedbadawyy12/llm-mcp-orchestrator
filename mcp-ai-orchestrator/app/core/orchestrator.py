@@ -51,7 +51,6 @@ class McpOrchestrator:
                 return "tools"
             return END
 
-        # --- 2. تم تعديل هذه الدالة بالكامل بالمنطق الصحيح ---
         def call_model(state: AgentState):
             """Agent node: calls Gemini to decide next action."""
             messages = state.get("messages", [])
@@ -63,40 +62,43 @@ class McpOrchestrator:
 
             system_message = SystemMessage(
                 content=(
-                    "You are a helpful assistant running on a **Windows operating system**. You have access to a set of tools. "
-                    "The user's request is in `HumanMessage`. "
-                    "If the request requires a tool (like 'list files'), you must call the tool. **Remember to use Windows commands (e.g., 'dir' instead of 'ls').** "
-                    "After you call a tool, you will receive a result. "
-                    "Your job is to analyze this result. "
-                    "You **must** then respond to the user with a helpful, final text message, either summarizing the tool's result or clearly explaining the error."
+                    "You are an expert assistant with tools, operating on Windows. "
+                    "You will be given a history of messages. You MUST follow these rules: "
+                    "1. Analyze the LAST message in the history. "
+                    "2. If the LAST message is from the User (`HumanMessage`): Analyze the request. If it matches a tool (like 'list files' -> 'dir'), call the tool. If it's a chat, respond. "
+                    "3. If the LAST message is a (`Tool result:`): This is the output of *your* previous action. Your **ONLY** job is to summarize this result for the user and then STOP. "
+                    "4. **CRITICAL RULE**: DO NOT call another tool after receiving a `Tool result:`. "
+                    "5. **CRITICAL RULE**: DO NOT verify your own work (e.g., DO NOT call `read_file` after `write_file` succeeds). Just report the success of the first tool."
                 )
             )
 
+            # --- This is the fix that worked last time (cleaning history) ---
+            logger.info("Cleaning message history for LLM consumption...")
+            messages_for_llm = [system_message] # Start the new message list
+            for msg in messages:
+                if msg.type == "tool":
+                    # Convert the tool message to a HumanMessage
+                    messages_for_llm.append(HumanMessage(content=f"Tool result: {msg.content}"))
+                else:
+                    # Keep HumanMessage and AIMessage as they are
+                    messages_for_llm.append(msg)
             
-            last_message = messages[-1]
-            messages_for_llm = [system_message] 
-            
-            if last_message.type == "tool":
-                logger.info("Last message was tool result. Cleaning messages for simple LLM.")
-                
-                for msg in messages:
-                    if msg.type == "tool":
+            # We always use the tool-bound model
+            logger.info("Calling LLM with tools to decide next step or summarize.")
+            response = llm_with_tools.invoke(messages_for_llm)
+            # --- End of fix ---
 
-                        messages_for_llm.append(HumanMessage(content=f"Tool result: {msg.content}"))
-                    else:
-                        messages_for_llm.append(msg)
-                
-                response = self.llm.invoke(messages_for_llm)
-                
-            else:
-                logger.info("Last message was human. Calling LLM with tools for routing.")
-                messages_for_llm.extend(messages)
-                response = llm_with_tools.invoke(messages_for_llm)
-
-            # --- نهاية الإصلاح ---
-
+            # Check for empty/blank content
             response_content = getattr(response, "content", "")
-            if not (response_content and response_content.strip()) and not response.tool_calls:
+            is_content_blank = False
+            if isinstance(response_content, str):
+                is_content_blank = not response_content.strip()
+            elif isinstance(response_content, list):
+                is_content_blank = not bool(response_content)
+            else:
+                is_content_blank = not bool(response_content)
+
+            if is_content_blank and not response.tool_calls:
                 logger.error("Gemini returned empty or blank content and no tool calls.")
                 raise ValueError("Gemini returned empty content.")
 
@@ -158,14 +160,18 @@ async def create_langchain_tools_from_router():
             def tool_func(**kwargs):
                 logger.info(f"Agent is calling tool: {tool_name_for_closure} with args: {kwargs}")
                 
+                # This function is sync, but the tool_router is async.
+                # We use asyncio.run() to bridge the gap.
                 async def _run_async():
                     output_chunks = []
                     async for event in tool_router.run_tool(unique_tool_name=tool_name_for_closure, params=kwargs):
                         output_chunks.append(event)
                     
+                    # --- MODIFIED: Parse events based on exit_code ---
                     stdout_lines = []
                     stderr_lines = []
-                    
+                    exit_code = 1 # Assume failure unless we see exit_code 0
+
                     for event in output_chunks:
                         if not isinstance(event, dict):
                             logger.warning(f"Received non-dict event: {event}")
@@ -176,16 +182,40 @@ async def create_langchain_tools_from_router():
                         
                         if event_type == "stdout":
                             stdout_lines.append(str(content))
-                        elif event_type in ("stderr", "error"):
+                        elif event_type == "stderr": # git clone logs progress to stderr
                             stderr_lines.append(str(content))
+                        elif event_type == "error": # A custom error from our server
+                            stderr_lines.append(str(content))
+                        elif event_type == "exit_code":
+                            try:
+                                exit_code = int(content)
+                            except (ValueError, TypeError):
+                                logger.error(f"Invalid exit_code received: {content}")
+                                exit_code = 1
                     
-                    if stderr_lines:
-                        return "Tool Error:\n" + "\n".join(stderr_lines)
-                    elif stdout_lines:
-                        return "Tool Output:\n" + "\n".join(stdout_lines)
+                    # Now, format the output based on the exit_code
+                    stdout_full = "\n".join(stdout_lines)
+                    stderr_full = "\n".join(stderr_lines)
+
+                    if exit_code == 0:
+                        # SUCCESS!
+                        if stdout_full:
+                            return f"Tool Output (stdout):\n{stdout_full}"
+                        elif stderr_full:
+                            # This handles 'git clone' progress messages
+                            return f"Tool Output (stderr, command succeeded):\n{stderr_full}"
+                        else:
+                            return "Tool ran successfully with no output."
                     else:
-                        return "Tool ran successfully but produced no output."
-                
+                        # FAILURE!
+                        if stderr_full:
+                            return f"Tool Error (exit code {exit_code}):\n{stderr_full}"
+                        elif stdout_full:
+                            return f"Tool Error (exit code {exit_code}, stderr was empty):\n{stdout_full}"
+                        else:
+                            return f"Tool Error (exit code {exit_code}). No output."
+                    # --- End of modification ---
+
                 return asyncio.run(_run_async())
             
             return tool_func

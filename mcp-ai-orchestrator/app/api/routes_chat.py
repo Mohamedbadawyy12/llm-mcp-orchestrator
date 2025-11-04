@@ -2,10 +2,11 @@
 
 import json
 from fastapi import APIRouter, HTTPException
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, BaseMessage
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 from loguru import logger
+from typing import Dict, List
 
 from app.core import orchestrator
 
@@ -14,7 +15,11 @@ router = APIRouter()
 class ChatRequest(BaseModel):
     """Request model for chat streaming."""
     message: str
-    thread_id: str  # used later for conversation tracking
+    thread_id: str  # This is the key to our conversation memory
+
+
+# This is our simple in-memory "database" for conversation histories.
+conversation_memory: Dict[str, List[BaseMessage]] = {}
 
 
 @router.post("/chat/stream")
@@ -25,35 +30,75 @@ async def chat_stream(chat_request: ChatRequest):
 
     logger.info(f"Received chat request: '{chat_request.message}' [thread={chat_request.thread_id}]")
 
+    # 1. Get the old conversation history from memory
+    current_history = conversation_memory.get(chat_request.thread_id, [])
+
+    # 2. Add the new user message to the history
+    current_messages = current_history + [HumanMessage(content=chat_request.message)]
+    
+    # 3. Prepare the input for the graph
+    graph_input = {"messages": current_messages}
+
+    # This list will store new messages (from the AI) to be saved back to memory
+    new_messages_from_graph: List[BaseMessage] = []
+
     async def event_stream():
         try:
-            graph_input = {"messages": [HumanMessage(content=chat_request.message)]}
-
+            # Run the graph stream with the full message history
             async for step in orchestrator.agent_graph.astream_events(graph_input, version="v1"):
-                event_data = {
-                    "event": step["event"],
-                    "name": step["name"],
-                    "data": {}
-                }
+                
+                # --- MODIFIED: Filter events for a user-friendly output ---
+                # We only care about the final output of a chain step (on_chain_end)
+                if step["event"] != "on_chain_end":
+                    continue # Skip all other events (on_chain_start, on_tool_start, etc.)
+                # --- End of modification ---
 
-                if step["event"] == "on_chain_end":
-                    data = step["data"].get("output")
-                    if isinstance(data, dict) and "messages" in data:
-                        messages = data["messages"]
-                        for msg in messages:
-                            if isinstance(msg, AIMessage):
-                                event_data["data"]["type"] = "ai_message"
-                                event_data["data"]["content"] = msg.content
-                                event_data["data"]["tool_calls"] = msg.tool_calls
-                            elif isinstance(msg, ToolMessage):
-                                event_data["data"]["type"] = "tool_result"
-                                event_data["data"]["content"] = msg.content
-                                event_data["data"]["tool_call_id"] = msg.tool_call_id
+                # This object will hold the clean data we want to send
+                clean_data_to_send = {}
 
-                yield json.dumps(event_data)
+                data = step["data"].get("output")
+                if isinstance(data, dict) and "messages" in data:
+                    messages = data["messages"]
+                    for msg in messages:
+                        if isinstance(msg, AIMessage):
+                            # Handle complex msg.content (which can be list or str)
+                            final_content = ""
+                            if isinstance(msg.content, str):
+                                final_content = msg.content
+                            elif isinstance(msg.content, list):
+                                for part in msg.content:
+                                    if isinstance(part, dict) and "text" in part:
+                                        final_content += part["text"]
+                            
+                            clean_data_to_send["type"] = "ai_message"
+                            clean_data_to_send["content"] = final_content
+                            clean_data_to_send["tool_calls"] = msg.tool_calls
+                            
+                            new_messages_from_graph.append(msg) # Save original message to memory
+                        
+                        elif isinstance(msg, ToolMessage):
+                            clean_data_to_send["type"] = "tool_result"
+                            clean_data_to_send["content"] = msg.content
+                            clean_data_to_send["tool_call_id"] = msg.tool_call_id
+
+                            new_messages_from_graph.append(msg) # Save original message to memory
+
+                # --- MODIFIED: Only yield if we have clean data ---
+                # If we processed a message and have content, send *only* the clean data.
+                if clean_data_to_send and (clean_data_to_send.get("content") or clean_data_to_send.get("tool_calls")):
+                    yield json.dumps(clean_data_to_send)
+                # --- End of modification ---
 
         except Exception as e:
             logger.error(f"Error during agent execution: {e}")
             yield json.dumps({"error": str(e)})
+        
+        finally:
+            # Save the updated memory
+            if new_messages_from_graph:
+                conversation_memory[chat_request.thread_id] = current_messages + new_messages_from_graph
+                logger.success(f"Updated memory for thread {chat_request.thread_id}. Total messages: {len(conversation_memory[chat_request.thread_id])}")
+            else:
+                logger.warning(f"No new messages generated by graph. Memory for thread {chat_request.thread_id} not updated.")
 
     return EventSourceResponse(event_stream())

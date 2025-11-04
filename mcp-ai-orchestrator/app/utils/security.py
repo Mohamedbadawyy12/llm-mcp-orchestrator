@@ -8,12 +8,14 @@ from typing import List
 # or better yet, commands should run in an isolated container.
 ALLOWED_COMMANDS = {
     "ls",
-    "dir", 
+    "dir",
     "pwd",
     "echo",
     "cat",
     "date",
     "whoami",
+    "git",
+    "docker", # --- MODIFIED: Add 'docker' to the allowed list ---
     # Add other safe, read-only commands here.
     # Avoid commands that can modify the filesystem or network state like 'rm', 'mv', 'curl', 'wget'.
 }
@@ -44,8 +46,10 @@ async def run_in_sandbox(command: str, args: List[str]) -> asyncio.subprocess.Pr
     if not is_command_safe(command):
         raise PermissionError(f"Command '{command}' is not allowed for security reasons.")
 
+    # 1. Combine command and args into a single string for the shell
     full_command_str = f"{command} {' '.join(args)}"
 
+    # 2. Use create_subprocess_shell to run built-in commands like 'dir'
     process = await asyncio.create_subprocess_shell(
         full_command_str, 
         stdout=asyncio.subprocess.PIPE, 

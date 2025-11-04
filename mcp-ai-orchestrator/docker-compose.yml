@@ -1,0 +1,65 @@
+services:
+  # 1. The Main Orchestrator
+  orchestrator:
+    build: .  # Build from the Dockerfile in the current directory
+    container_name: mcp_orchestrator
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000" # Expose the main API port to your local machine
+    env_file:
+      - .env      # Load the GOOGLE_API_KEY from the .env file
+    volumes:
+      - .:/workspace # Mount the current directory to /workspace
+    working_dir: /workspace
+    depends_on:
+      - terminal_server
+      - file_system_server
+      - git_server
+      - docker_server
+
+  # 2. The Terminal Server
+  terminal_server:
+    build: .
+    container_name: mcp_terminal_server
+    command: uvicorn app.servers.terminal_server:app --host 0.0.0.0 --port 8001
+    ports:
+      - "8001:8001"
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+
+  # 3. The File System Server
+  file_system_server:
+    build: .
+    container_name: mcp_file_system_server
+    command: uvicorn app.servers.file_server:app --host 0.0.0.0 --port 8002
+    ports:
+      - "8002:8002"
+    volumes:
+      - .:/workspace # Needs volume access to read/write files
+    working_dir: /workspace
+
+  # 4. The Git Server
+  git_server:
+    build: .
+    container_name: mcp_git_server
+    command: uvicorn app.servers.git_server:app --host 0.0.0.0 --port 8003
+    ports:
+      - "8003:8003"
+    volumes:
+      - .:/workspace # Needs volume access to run git commands
+    working_dir: /workspace
+
+  # 5. The Docker Server
+  docker_server:
+    build: .
+    container_name: mcp_docker_server
+    command: uvicorn app.servers.docker_server:app --host 0.0.0.0 --port 8004
+    ports:
+      - "8004:8004"
+    volumes:
+      # CRITICAL: Mount the host's Docker socket
+      # This allows the container to 'talk' to the Docker daemon on your machine
+      - /var/run/docker.sock:/var/run/docker.sock 
+      - .:/workspace
+    working_dir: /workspace
