@@ -1,11 +1,11 @@
 
-# MCP AI Orchestrator
+#  AI Orchestrator
 
 
 
 ## Overview
 
-The **MCP AI Orchestrator** is a sophisticated, enterprise-ready platform for building and deploying tool-augmented Generative AI agents. This project moves beyond simple chatbot wrappers by implementing a robust, containerized microservice architecture. At its core, a central orchestrator, powered by **LangGraph** and **Google's Gemini model**, intelligently routes tasks to a suite of decoupled, specialized microservices.
+The **AI Orchestrator** is a sophisticated, enterprise-ready platform for building and deploying tool-augmented Generative AI agents. This project moves beyond simple chatbot wrappers by implementing a robust, containerized microservice architecture. At its core, a central orchestrator, powered by **LangGraph** and **Google's Gemini model**, intelligently routes tasks to a suite of decoupled, specialized microservices.
 
 These "tool servers" provide the AI agent with a secure bridge to real-world capabilities, including:
 
@@ -29,38 +29,38 @@ This decoupled design ensures the system is not only highly **scalable** and **e
 
 The system is composed of five primary services defined in the `docker-compose.yml` file:
 
-1.  **`mcp_orchestrator` (The Brain)**
+1.  **`orchestrator` (The Brain)**
 
       * **Stack:** FastAPI, LangGraph, Google Gemini.
       * **Role:** Exposes the main `/chat/stream` API endpoint. It receives user requests, manages the conversation state using `AgentState`, and orchestrates the flow. It decides when to call a tool and which tool to use.
       * **Key Components:**
           * `ToolRouter`: Discovers and registers tools from other services.
-          * `McpOrchestrator`: Defines the LangGraph agent workflow.
-          * `MCPHttpClient`: An asynchronous client for communicating with the tool servers.
+          * `Orchestrator`: Defines the LangGraph agent workflow.
+          * `HttpClient`: An asynchronous client for communicating with the tool servers.
 
-2.  **`mcp_terminal_server`**
+2.  **`terminal_server`**
 
       * **Stack:** FastAPI, SSE.
       * **Role:** Provides a single tool: `execute_command`. It runs commands within a secure sandbox, streaming `stdout`, `stderr`, and the final `exit_code` back to the orchestrator via SSE.
 
-3.  **`mcp_file_system_server`**
+3.  **`file_system_server`**
 
       * **Stack:** FastAPI, SSE.
       * **Role:** Provides `read_file` and `write_file` tools. It performs file operations on the mounted workspace volume and streams the result or success message.
 
-4.  **`mcp_git_server`**
+4.  **`git_server`**
 
       * **Stack:** FastAPI, SSE.
       * **Role:** Exposes Git functionalities like `git_clone`, `git_status`, `git_add`, and `git_commit`.
 
-5.  **`mcp_docker_server`**
+5.  **`docker_server`**
 
       * **Stack:** FastAPI, SSE.
       * **Role:** Provides tools to interact with the host's Docker daemon (via a mounted socket), allowing the agent to `docker_build`, `docker_ps`, and `docker_run`.
 
 ## How It Works: The Request Lifecycle
 
-1.  A user sends a request (e.g., "Write 'hello world' to a file named 'hello.txt'") to the `mcp_orchestrator`'s `/chat/stream` endpoint.
+1.  A user sends a request (e.g., "Write 'hello world' to a file named 'hello.txt'") to the `orchestrator`'s `/chat/stream` endpoint.
 2.  The orchestrator adds the `HumanMessage` to the `AgentState` for the user's `thread_id`.
 3.  **LangGraph**'s `call_model` node is triggered. It invokes the Gemini LLM with the current conversation history.
 4.  The LLM analyzes the request and determines that it must use a tool. It responds with a tool call: `file_system_server/write_file` with params `{"path": "hello.txt", "content": "hello world"}`.
@@ -94,7 +94,7 @@ The system is composed of five primary services defined in the `docker-compose.y
 
     ```bash
     git clone <your-repo-url>
-    cd mcp-ai-orchestrator
+    cd ai-orchestrator
     ```
 
 2.  **Create Environment File**
